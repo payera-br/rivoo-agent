@@ -7,6 +7,6 @@ vet:
 	$(GO) vet ./...
 
 build:
-	$(GO) build -trimpath -ldflags "-s -w -X main.version=$${VERSION:-dev}" -o dist/rivoo-agent ./cmd/rivoo-agent
+	$(GO) build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=$${VERSION:-dev}" -o dist/rivoo-agent ./cmd/rivoo-agent
 
 .PHONY: test vet build

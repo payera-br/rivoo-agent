@@ -210,4 +210,3 @@ func TestAckRetriedWithoutRunningAgain(t *testing.T) {
 		t.Fatalf("ran %v", *ran)
 	}
 }
-

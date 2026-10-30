@@ -1,0 +1,3 @@
+Idx | Char name | Player name | User ID | Platform ID | Platform Name
+  0 | Ana | AnaSteam | 2F0D1E | 76561198000000001 | Steam
+  1 | Bia | BiaS | 3A4B5C | 76561198000000002 | Steam

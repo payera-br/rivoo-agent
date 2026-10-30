@@ -1,0 +1,2 @@
+0. id=171, Ana Souza, pos=(1.0, 2.0, 3.0), rot=(0.0, 0.0, 0.0), remote=True, health=100, deaths=0, zombies=0, players=0, score=0, level=1, pltfmid=Steam_76561198000000001, crossid=EOS_0002abc, ip=10.0.0.1, ping=20
+Total of 1 in the game

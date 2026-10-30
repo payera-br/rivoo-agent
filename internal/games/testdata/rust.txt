@@ -1,0 +1,1 @@
+[{"SteamID":"76561198000000001","OwnerSteamID":"0","DisplayName":"Ana Souza","Ping":20,"Address":"10.0.0.1:5000","ConnectedSeconds":10,"VoiationLevel":0,"CurrentLevel":0,"UnspentXp":0,"Health":100}]

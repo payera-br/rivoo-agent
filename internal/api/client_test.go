@@ -56,7 +56,9 @@ func TestStatusErrors(t *testing.T) {
 }
 
 func TestAckSendsResults(t *testing.T) {
-	var got struct{ Results []AckResult `json:"results"` }
+	var got struct {
+		Results []AckResult `json:"results"`
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/agent/commands/ack" {
 			t.Fatalf("path %s", r.URL.Path)

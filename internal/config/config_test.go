@@ -31,3 +31,11 @@ func TestMissingFileIsEmpty(t *testing.T) {
 		t.Fatalf("%+v %v", c, err)
 	}
 }
+
+func TestDefaultPathIsNextToTheBinary(t *testing.T) {
+	t.Setenv("RIVOO_CONFIG", "")
+	exe, _ := os.Executable()
+	if got, want := Path(), filepath.Join(filepath.Dir(exe), "rivoo-agent.json"); got != want {
+		t.Fatalf("%s != %s", got, want)
+	}
+}

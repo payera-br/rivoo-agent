@@ -72,3 +72,42 @@ func TestWorkerStartsStopsAndRestartsAgents(t *testing.T) {
 	mu.Unlock()
 	wait(func() bool { return !running["conn_a"] && running["conn_b"] })
 }
+
+func TestRestartWaitsForTheOldLoop(t *testing.T) {
+	var mu sync.Mutex
+	list := []Agent{{ConnectionID: "c", Game: "RUST", Protocol: "webrcon", Host: "a.example.com", Port: 1, Password: "p1"}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"data": list})
+	}))
+	defer srv.Close()
+	running, overlap, started := 0, false, 0
+	start := func(ctx context.Context, a Agent) {
+		mu.Lock()
+		running++
+		started++
+		if running > 1 {
+			overlap = true
+		}
+		mu.Unlock()
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // finishing its batch and acks
+		mu.Lock()
+		running--
+		mu.Unlock()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go Work(ctx, Options{BaseURL: srv.URL, Key: "k", Every: 10 * time.Millisecond, Start: start})
+	time.Sleep(40 * time.Millisecond)
+	mu.Lock()
+	list = []Agent{{ConnectionID: "c", Game: "RUST", Protocol: "webrcon", Host: "a.example.com", Port: 1, Password: "p2"}}
+	mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	mu.Lock()
+	defer mu.Unlock()
+	if overlap || started != 2 {
+		t.Fatalf("overlap=%v started=%d", overlap, started)
+	}
+}

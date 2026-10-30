@@ -119,7 +119,7 @@ func console() (func(context.Context) (rcon.Conn, error), *[]string) {
 
 func TestDeliversAndReportsTheAnswer(t *testing.T) {
 	f := &fakeAPI{queue: []map[string]any{
-		{"id": "run_ok", "command": "inventory.giveto 76561198000000001 rifle.ak 1", "requireOnline": true},
+		{"id": "run_ok", "command": "inventory.giveto 76561198000000001 rifle.ak 1", "requireOnline": true, "recipient": map[string]any{"uuid": "76561198000000001", "name": nil}},
 		{"id": "run_bad", "command": "bad.cmd", "requireOnline": false},
 	}}
 	dial, ran := console()
@@ -222,5 +222,113 @@ func TestHeartbeatGoesOutWhenWhoIsOnlineChanges(t *testing.T) {
 	_, hbs := f.snapshot()
 	if len(hbs) < 2 || hbs[len(hbs)-1]["playersOnline"] != float64(1) {
 		t.Fatalf("heartbeats %+v", hbs)
+	}
+}
+
+// scriptedConsole answers playerlist from a function and records commands; "freeze" goes out but
+// gets no answer.
+type scriptedConsole struct {
+	mu      *sync.Mutex
+	ran     *[]string
+	players func() string
+}
+
+func (c *scriptedConsole) Exec(_ context.Context, cmd string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cmd == "playerlist" {
+		return c.players(), nil
+	}
+	*c.ran = append(*c.ran, cmd)
+	if cmd == "freeze" {
+		return "", rcon.ErrNoAnswer
+	}
+	return "ok", nil
+}
+func (c *scriptedConsole) Close() error { return nil }
+
+func TestNoAnswerIsReportedAndNeverRunAgain(t *testing.T) {
+	f := &fakeAPI{queue: []map[string]any{{"id": "run_f", "command": "freeze"}}}
+	var mu sync.Mutex
+	var ran []string
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string { return "[]" }}, nil
+	}
+	runFor(t, f, dial, 300*time.Millisecond)
+	acks, _ := f.snapshot()
+	if len(acks) != 1 || acks[0].Status != "failed" || !strings.Contains(acks[0].Error, "pode ter rodado") {
+		t.Fatalf("acks %+v", acks)
+	}
+	if len(ran) != 1 {
+		t.Fatalf("freeze ran %d times", len(ran))
+	}
+}
+
+func TestShutdownStillReportsWhatRan(t *testing.T) {
+	f := &fakeAPI{queue: []map[string]any{{"id": "run_1", "command": "say oi"}}, failAcks: 1}
+	srv := f.server(t)
+	g, _ := games.Get("RUST")
+	dial, ran := console()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for {
+			f.mu.Lock()
+			n := len(*ran)
+			f.mu.Unlock()
+			if n > 0 {
+				cancel()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 20 * time.Millisecond, HeartbeatEvery: time.Hour, MaxBackoff: 50 * time.Millisecond})
+	acks, _ := f.snapshot()
+	if len(acks) != 1 || acks[0].ID != "run_1" {
+		t.Fatalf("what ran wasn't reported before exit: %+v", acks)
+	}
+}
+
+func TestBadPlayerRowsAreDropped(t *testing.T) {
+	f := &fakeAPI{}
+	var mu sync.Mutex
+	var ran []string
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string {
+			return `[{"SteamID":"76561198000000001","DisplayName":""},{"SteamID":"bad id","DisplayName":"Bia"},{"SteamID":"76561198000000003","DisplayName":"Caio"}]`
+		}}, nil
+	}
+	runFor(t, f, dial, 150*time.Millisecond)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	got := f.polls[0]
+	if len(got) != 2 || got[0] != (api.Player{Name: "Bia"}) || got[1] != (api.Player{ID: "76561198000000003", Name: "Caio"}) {
+		t.Fatalf("players sent %+v", got)
+	}
+}
+
+func TestPlayerWhoLeftDuringTheWaitKeepsTheRunQueued(t *testing.T) {
+	f := &fakeAPI{queue: []map[string]any{{"id": "run_ana", "command": "give ana", "requireOnline": true, "recipient": map[string]any{"uuid": "76561198000000001", "name": nil}}}}
+	var mu sync.Mutex
+	var ran []string
+	lists := 0
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string {
+			lists++
+			if lists == 1 {
+				return `[{"SteamID":"76561198000000001","DisplayName":"Ana"}]`
+			}
+			return "[]" // left while the poll waited
+		}}, nil
+	}
+	srv := f.server(t)
+	g, _ := games.Get("RUST")
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 20 * time.Millisecond, HeartbeatEvery: time.Hour, MaxBackoff: 50 * time.Millisecond, StaleAfter: time.Nanosecond})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 0 {
+		t.Fatalf("ran for a player who left: %v", ran)
 	}
 }

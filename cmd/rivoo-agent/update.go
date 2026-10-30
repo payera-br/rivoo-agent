@@ -14,11 +14,12 @@ import (
 // releasePublicKey verifies release manifests (the private half is the CI secret AGENT_SIGNING_KEY).
 const releasePublicKey = "zjHWFkyjJMmyhRSihcsxJb5NT3UewxNiuvn7xL//Znc="
 
-// manifestURL is where releases are announced; RIVOO_UPDATE_URL overrides it.
-const manifestURL = "https://rivoo.gg/agent/latest.json"
+// manifestURL is where releases are announced (the release workflow uploads it with the
+// binaries); RIVOO_UPDATE_URL overrides it.
+const manifestURL = "https://github.com/payera-br/rivoo-agent/releases/latest/download/latest.json"
 
 func init() {
-	autoUpdate = func(ctx context.Context) {
+	autoUpdate = func(ctx context.Context, onUpdated func()) {
 		pub, _ := base64.StdEncoding.DecodeString(releasePublicKey)
 		url := manifestURL
 		if v := os.Getenv("RIVOO_UPDATE_URL"); v != "" {
@@ -29,8 +30,8 @@ func init() {
 			if err != nil {
 				log.Printf("atualização: %v", err)
 			} else if updated {
-				log.Printf("Agente atualizado; reiniciando.")
-				restart()
+				onUpdated()
+				return
 			}
 			select {
 			case <-ctx.Done():

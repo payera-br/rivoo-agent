@@ -39,6 +39,8 @@ func (w *webRcon) Exec(ctx context.Context, cmd string) (string, error) {
 	defer w.mu.Unlock()
 	w.next++
 	id := w.next
+	ctx, cancel := context.WithDeadline(ctx, deadline(ctx))
+	defer cancel()
 	msg, _ := json.Marshal(map[string]any{"Identifier": id, "Message": cmd, "Name": "WebRcon"})
 	if err := w.c.Write(ctx, websocket.MessageText, msg); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrConn, err)
@@ -46,7 +48,7 @@ func (w *webRcon) Exec(ctx context.Context, cmd string) (string, error) {
 	for {
 		_, b, err := w.c.Read(ctx)
 		if err != nil {
-			return "", fmt.Errorf("%w: %v", ErrConn, err)
+			return "", fmt.Errorf("%w: %v", ErrNoAnswer, err)
 		}
 		var m struct {
 			Identifier int
@@ -54,6 +56,9 @@ func (w *webRcon) Exec(ctx context.Context, cmd string) (string, error) {
 		}
 		if json.Unmarshal(b, &m) != nil || m.Identifier != id {
 			continue // log lines and other answers
+		}
+		if len(m.Message) > maxAnswer {
+			m.Message = m.Message[:maxAnswer]
 		}
 		return m.Message, nil
 	}

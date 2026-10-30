@@ -77,3 +77,15 @@ func TestAppliesOnlySignedReleases(t *testing.T) {
 		t.Fatal("updated to the same version")
 	}
 }
+
+func TestReplaceRestoresTheOldBinaryWhenItFails(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "rivoo-agent.exe")
+	os.WriteFile(exe, []byte("velho"), 0o755)
+	if err := replace(exe, filepath.Join(dir, "missing.new"), true); err == nil {
+		t.Fatal("expected an error")
+	}
+	if b, err := os.ReadFile(exe); err != nil || string(b) != "velho" {
+		t.Fatalf("binary lost: %q %v", b, err)
+	}
+}

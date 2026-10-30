@@ -11,8 +11,13 @@ import (
 	"time"
 )
 
-// idle: 7 Days to Die doesn't mark the end of an answer; stop reading after this much silence.
-const idle = 300 * time.Millisecond
+const (
+	// 7 Days to Die doesn't mark the end of an answer: stop after this much silence…
+	idle = 300 * time.Millisecond
+	// …or after this long in total (the console also streams the server log).
+	answerMax = 3 * time.Second
+	maxLine   = 4096
+)
 
 type telnet struct {
 	mu sync.Mutex
@@ -27,7 +32,7 @@ func dialTelnet(ctx context.Context, host string, port int, password string) (Co
 		return nil, fmt.Errorf("%w: %v", ErrConn, err)
 	}
 	t := &telnet{c: c, r: bufio.NewReader(c)}
-	c.SetDeadline(time.Now().Add(10 * time.Second))
+	c.SetDeadline(deadline(ctx))
 	if _, err := t.until("password"); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("%w: %v", ErrConn, err)
@@ -45,14 +50,17 @@ func dialTelnet(ctx context.Context, host string, port int, password string) (Co
 		c.Close()
 		return nil, ErrAuth
 	}
-	t.drain()
+	t.drain(answerMax)
 	return t, nil
 }
 
-// until reads lines until one contains any of the words (case-insensitive).
+// until reads lines (each cut to maxLine) until one contains any of the words.
 func (t *telnet) until(words ...string) (string, error) {
 	for {
 		line, err := t.r.ReadString('\n')
+		if len(line) > maxLine {
+			line = line[:maxLine]
+		}
 		low := strings.ToLower(line)
 		for _, w := range words {
 			if strings.Contains(low, w) {
@@ -65,27 +73,47 @@ func (t *telnet) until(words ...string) (string, error) {
 	}
 }
 
-// drain reads whatever arrives until a quiet gap.
-func (t *telnet) drain() string {
+// drain reads until a quiet gap, at most `max` in total and maxAnswer bytes. A dropped
+// connection is an error; the quiet gap (timeout) is the normal end.
+func (t *telnet) drain(max time.Duration) (string, error) {
 	var b strings.Builder
-	for {
-		t.c.SetReadDeadline(time.Now().Add(idle))
+	end := time.Now().Add(max)
+	for time.Now().Before(end) {
+		d := time.Now().Add(idle)
+		if d.After(end) {
+			d = end
+		}
+		t.c.SetReadDeadline(d)
 		line, err := t.r.ReadString('\n')
-		b.WriteString(line)
-		if err != nil { // the quiet gap (timeout) ends the answer; a drop shows on the next write
-			return b.String()
+		if b.Len() < maxAnswer {
+			b.WriteString(line)
+		}
+		if err != nil {
+			if timeout(err) {
+				return b.String(), nil
+			}
+			return b.String(), err
 		}
 	}
+	return b.String(), nil
 }
 
 func (t *telnet) Exec(ctx context.Context, cmd string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	// Log lines that queued up before the command are not its answer.
+	if _, err := t.drain(50 * time.Millisecond); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrConn, err)
+	}
+	t.c.SetWriteDeadline(deadline(ctx))
 	if _, err := t.c.Write([]byte(cmd + "\r\n")); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrConn, err)
 	}
-	return t.drain(), nil
+	out, err := t.drain(answerMax)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrNoAnswer, err)
+	}
+	return out, nil
 }
 
 func (t *telnet) Close() error { return t.c.Close() }

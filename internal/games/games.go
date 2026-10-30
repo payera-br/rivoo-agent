@@ -54,7 +54,7 @@ func (g *game) Prepare(ctx context.Context, c rcon.Conn, run api.Run) (string, e
 }
 
 // Generic answers that mean "didn't run" in most consoles.
-var common = []string{"unknown command", "unknown or incomplete command", "no player was found", "player not found", "not found"}
+var common = []string{"unknown command", "unknown or incomplete command", "no player was found", "player not found"}
 
 func (g *game) Failed(output string) (bool, string) {
 	low := strings.ToLower(output)
@@ -133,7 +133,7 @@ func lines(s string) []string {
 }
 
 func init() {
-	register(&game{name: "MINECRAFT_JAVA", protocol: "source", listCmd: "list", parse: func(out string) []api.Player {
+	register(&game{name: "MINECRAFT_JAVA", protocol: "source", listCmd: "list", errors: []string{"unknown item", "incorrect argument", "expected whitespace", "invalid", "no entity was found", "that player cannot be found"}, parse: func(out string) []api.Player {
 		m := mcList.FindStringSubmatch(out)
 		if m == nil {
 			return nil
@@ -147,7 +147,7 @@ func init() {
 		return ps
 	}})
 
-	register(&game{name: "RUST", protocol: "webrcon", listCmd: "playerlist", errors: []string{"command '"}, parse: func(out string) []api.Player {
+	register(&game{name: "RUST", protocol: "webrcon", listCmd: "playerlist", errors: []string{"' not found", "couldn't find player"}, parse: func(out string) []api.Player {
 		var rows []struct{ SteamID, DisplayName string }
 		if json.Unmarshal([]byte(out), &rows) != nil {
 			return nil
@@ -220,9 +220,10 @@ func conanIndex(ctx context.Context, c rcon.Conn, run api.Run) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// With a Steam id, only the id: anyone can name a character after the buyer.
 	want := func(id, name string) bool {
-		if run.Recipient.UUID != nil && *run.Recipient.UUID == id {
-			return true
+		if run.Recipient.UUID != nil && *run.Recipient.UUID != "" {
+			return *run.Recipient.UUID == id
 		}
 		return run.Recipient.Name != nil && strings.EqualFold(*run.Recipient.Name, name)
 	}

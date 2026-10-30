@@ -11,9 +11,14 @@ import (
 var (
 	// ErrAuth: the server refused the password.
 	ErrAuth = errors.New("senha do RCON recusada")
-	// ErrConn: couldn't reach the console, or the connection dropped.
+	// ErrConn: couldn't reach the console, or the connection dropped before the command went out.
 	ErrConn = errors.New("não foi possível falar com o RCON")
+	// ErrNoAnswer: the command went out but no answer came; it may have run, so never retry it blindly.
+	ErrNoAnswer = errors.New("o servidor não respondeu ao comando; ele pode ter rodado")
 )
+
+// maxAnswer bounds what one command's answer may hold.
+const maxAnswer = 64 << 10
 
 // Conn runs one console command and returns what the server answered.
 type Conn interface {

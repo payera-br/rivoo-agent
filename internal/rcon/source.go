@@ -1,6 +1,7 @@
 package rcon
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -21,11 +22,14 @@ const (
 	splitAt = 4000
 	// After a long body, wait this long for the rest.
 	moreWait = 300 * time.Millisecond
+	// A command's answer must start within this (unless ctx is shorter).
+	answerWait = 10 * time.Second
 )
 
 type source struct {
 	mu   sync.Mutex
 	c    net.Conn
+	r    *bufio.Reader
 	next int32
 }
 
@@ -35,7 +39,7 @@ func dialSource(ctx context.Context, host string, port int, password string) (Co
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConn, err)
 	}
-	s := &source{c: c, next: 1}
+	s := &source{c: c, r: bufio.NewReader(c), next: 1}
 	if err := s.auth(ctx, password); err != nil {
 		c.Close()
 		return nil, err
@@ -43,12 +47,12 @@ func dialSource(ctx context.Context, host string, port int, password string) (Co
 	return s, nil
 }
 
-func (s *source) deadline(ctx context.Context) {
-	if d, ok := ctx.Deadline(); ok {
-		s.c.SetDeadline(d)
-	} else {
-		s.c.SetDeadline(time.Now().Add(10 * time.Second))
+func deadline(ctx context.Context) time.Time {
+	d := time.Now().Add(answerWait)
+	if cd, ok := ctx.Deadline(); ok && cd.Before(d) {
+		return cd
 	}
+	return d
 }
 
 func (s *source) write(id, typ int32, body string) error {
@@ -61,16 +65,17 @@ func (s *source) write(id, typ int32, body string) error {
 	return err
 }
 
+// read takes one whole packet from the buffered stream.
 func (s *source) read() (id, typ int32, body string, err error) {
 	var size int32
-	if err = binary.Read(s.c, binary.LittleEndian, &size); err != nil {
+	if err = binary.Read(s.r, binary.LittleEndian, &size); err != nil {
 		return
 	}
 	if size < 10 || size > 1<<20 {
 		return 0, 0, "", fmt.Errorf("pacote RCON inválido (%d bytes)", size)
 	}
 	buf := make([]byte, size)
-	if _, err = io.ReadFull(s.c, buf); err != nil {
+	if _, err = io.ReadFull(s.r, buf); err != nil {
 		return
 	}
 	id = int32(binary.LittleEndian.Uint32(buf[0:]))
@@ -84,7 +89,7 @@ func (s *source) read() (id, typ int32, body string, err error) {
 }
 
 func (s *source) auth(ctx context.Context, password string) error {
-	s.deadline(ctx)
+	s.c.SetDeadline(deadline(ctx))
 	if err := s.write(0, typeAuth, password); err != nil {
 		return fmt.Errorf("%w: %v", ErrConn, err)
 	}
@@ -104,36 +109,48 @@ func (s *source) auth(ctx context.Context, password string) error {
 	}
 }
 
+func timeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout() || errors.Is(err, os.ErrDeadlineExceeded)
+}
+
 func (s *source) Exec(ctx context.Context, cmd string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.next++
 	id := s.next
-	s.deadline(ctx)
+	s.c.SetDeadline(deadline(ctx))
 	if err := s.write(id, typeExec, cmd); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrConn, err)
 	}
 	var out []byte
 	for {
+		if len(out) > 0 {
+			// More of a split answer? Only peek under the short wait, so a late packet is never cut.
+			s.c.SetReadDeadline(time.Now().Add(moreWait))
+			if _, err := s.r.Peek(4); err != nil {
+				s.c.SetDeadline(deadline(ctx))
+				if timeout(err) {
+					return string(out), nil
+				}
+				return "", fmt.Errorf("%w: %v", ErrNoAnswer, err)
+			}
+			s.c.SetReadDeadline(deadline(ctx))
+		}
 		rid, typ, body, err := s.read()
 		if err != nil {
-			var ne net.Error
-			// The rest of a split answer never came: what we have is the answer.
-			if len(out) > 0 && (errors.As(err, &ne) && ne.Timeout() || errors.Is(err, os.ErrDeadlineExceeded)) {
-				s.deadline(ctx)
-				return string(out), nil
-			}
-			return "", fmt.Errorf("%w: %v", ErrConn, err)
+			return "", fmt.Errorf("%w: %v", ErrNoAnswer, err)
 		}
 		if rid != id || typ != typeResponse {
 			continue
 		}
+		if len(out)+len(body) > maxAnswer {
+			body = body[:maxAnswer-len(out)]
+		}
 		out = append(out, body...)
-		if len(body) < splitAt {
-			s.deadline(ctx)
+		if len(body) < splitAt || len(out) >= maxAnswer {
 			return string(out), nil
 		}
-		s.c.SetReadDeadline(time.Now().Add(moreWait))
 	}
 }
 

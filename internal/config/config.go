@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -22,10 +23,14 @@ type Config struct {
 	AutoUpdate *bool  `json:"autoUpdate,omitempty"`
 }
 
-// Path is the config file: RIVOO_CONFIG, else rivoo-agent.json in the working directory.
+// Path is the config file: RIVOO_CONFIG, else rivoo-agent.json next to the binary (not the working
+// directory: a service started from elsewhere must find its key, or it would pair again).
 func Path() string {
 	if p := os.Getenv("RIVOO_CONFIG"); p != "" {
 		return p
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "rivoo-agent.json")
 	}
 	return "rivoo-agent.json"
 }

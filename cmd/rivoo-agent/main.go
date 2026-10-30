@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/payera-br/rivoo-agent/internal/api"
@@ -88,11 +89,18 @@ func run(ctx context.Context) error {
 		}
 		log.Printf("Pareado! Configuração salva em %s.", path)
 	}
+	// A new version stops the loop at a safe point (what ran is reported first), then restarts.
+	loopCtx, stopLoop := context.WithCancel(ctx)
+	defer stopLoop()
+	var updated atomic.Bool
 	if cfg.Updates() {
-		go autoUpdate(ctx)
+		go autoUpdate(loopCtx, func() {
+			updated.Store(true)
+			stopLoop()
+		})
 	}
 	log.Printf("Rivoo Agent %s: %s em %s:%d", version, game.Name(), cfg.RconHost, cfg.RconPort)
-	runner.Run(ctx, runner.Options{
+	runner.Run(loopCtx, runner.Options{
 		Client:  client,
 		Game:    game,
 		Version: version,
@@ -100,6 +108,10 @@ func run(ctx context.Context) error {
 			return rcon.Dial(ctx, game.Protocol(), cfg.RconHost, cfg.RconPort, cfg.RconPass)
 		},
 	})
+	if updated.Load() && ctx.Err() == nil {
+		log.Printf("Agente atualizado; reiniciando.")
+		restart()
+	}
 	return ctx.Err()
 }
 
@@ -153,7 +165,7 @@ func ask(cfg *config.Config) error {
 	if _, err := games.Get(cfg.Game); err != nil {
 		return err
 	}
-	if cfg.Key == "" && interactive {
+	if cfg.Key == "" && interactive && os.Getenv("RCON_HOST") == "" {
 		cfg.RconHost = prompt("IP do RCON (127.0.0.1 se o jogo roda nesta máquina)", cfg.RconHost)
 	}
 	if cfg.RconPort == 0 {
@@ -164,7 +176,13 @@ func ask(cfg *config.Config) error {
 		if !interactive {
 			return errors.New("defina RCON_PASSWORD")
 		}
-		cfg.RconPass = prompt("Senha do RCON", "")
+		fmt.Print("Senha do RCON: ")
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return err
+		}
+		cfg.RconPass = strings.TrimSpace(string(b))
 	}
 	return nil
 }
@@ -172,5 +190,5 @@ func ask(cfg *config.Config) error {
 // isTerminal: a real console (not /dev/null, a pipe or a panel's stdin).
 func isTerminal() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
-// autoUpdate is replaced in update.go once signed releases exist.
-var autoUpdate = func(context.Context) {}
+// autoUpdate checks for signed releases; onUpdated stops the loop so the new binary can start.
+var autoUpdate = func(context.Context, func()) {}

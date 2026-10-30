@@ -99,23 +99,51 @@ func Apply(ctx context.Context, o Options) (bool, error) {
 		}
 	}
 	tmp := filepath.Join(filepath.Dir(exe), "."+filepath.Base(exe)+".new")
-	if err := os.WriteFile(tmp, bin, 0o755); err != nil {
+	if err := writeSynced(tmp, bin); err != nil {
+		os.Remove(tmp)
 		return false, err
 	}
-	// Windows can't overwrite a running binary, but can rename it away first.
+	if err := replace(exe, tmp, runtime.GOOS == "windows"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func writeSynced(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// replace puts tmp in exe's place. moveAway (Windows: a running binary can't be overwritten)
+// renames exe aside first and puts it back if the swap fails, so there's always a binary.
+func replace(exe, tmp string, moveAway bool) error {
 	old := exe + ".old"
 	_ = os.Remove(old)
-	if runtime.GOOS == "windows" {
+	if moveAway {
 		if err := os.Rename(exe, old); err != nil {
 			os.Remove(tmp)
-			return false, err
+			return err
 		}
 	}
 	if err := os.Rename(tmp, exe); err != nil {
 		os.Remove(tmp)
-		return false, err
+		if moveAway {
+			_ = os.Rename(old, exe)
+		}
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // newer compares dotted numeric versions; "dev" and anything unparsable never update.

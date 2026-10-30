@@ -145,3 +145,27 @@ func TestDetectByAnswer(t *testing.T) {
 		t.Fatalf("%v %v", g, err)
 	}
 }
+
+func TestConanMatchesBySteamIdOnlyWhenItHasOne(t *testing.T) {
+	g, _ := Get("CONAN")
+	// Bia (…02) is at index 1; someone else named their character "Bia" at index 0.
+	s := &scripted{answers: map[string]string{"listplayers": "Idx | Char name | Player name | User ID | Platform ID | Platform Name\n  0 | Bia | Outro | X | 76561198000000009 | Steam\n  1 | Bia | BiaS | Y | 76561198000000002 | Steam\n"}}
+	id, name := "76561198000000002", "Bia"
+	run := api.Run{Command: "con {index} spawnitem 1 1"}
+	run.Recipient.UUID, run.Recipient.Name = &id, &name
+	if cmd, err := g.Prepare(context.Background(), s, run); err != nil || cmd != "con 1 spawnitem 1 1" {
+		t.Fatalf("%q %v", cmd, err)
+	}
+}
+
+func TestMinecraftErrorsAndNoBroadNotFound(t *testing.T) {
+	g, _ := Get("MINECRAFT_JAVA")
+	for _, out := range []string{"Unknown item 'minecraft:diamondz'", "Incorrect argument for command", "Expected whitespace to end one argument, but found trailing data"} {
+		if failed, _ := g.Failed(out); !failed {
+			t.Fatalf("%q not a failure", out)
+		}
+	}
+	if failed, _ := g.Failed("Gave 1 [Map of the place not found yet] to Steve"); failed {
+		t.Fatal("a success that mentions 'not found' failed")
+	}
+}

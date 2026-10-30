@@ -37,6 +37,7 @@ type Options struct {
 
 type running struct {
 	cancel context.CancelFunc
+	done   chan struct{}
 	same   Agent
 }
 
@@ -61,15 +62,30 @@ func Work(ctx context.Context, o Options) {
 			seen := map[string]bool{}
 			for _, a := range list {
 				seen[a.ConnectionID] = true
+				var prev chan struct{}
 				if r, ok := live[a.ConnectionID]; ok && r.same == a {
 					continue
 				} else if ok {
 					r.cancel()
+					prev = r.done
 				}
 				c, cancel := context.WithCancel(ctx)
-				live[a.ConnectionID] = running{cancel: cancel, same: a}
+				done := make(chan struct{})
+				live[a.ConnectionID] = running{cancel: cancel, done: done, same: a}
 				wg.Add(1)
-				go func(a Agent) { defer wg.Done(); o.Start(c, a) }(a)
+				go func(a Agent) {
+					defer wg.Done()
+					defer close(done)
+					// Never two loops on one queue: the old one finishes its batch and acks first.
+					if prev != nil {
+						select {
+						case <-prev:
+						case <-c.Done():
+							return
+						}
+					}
+					o.Start(c, a)
+				}(a)
 			}
 			for id, r := range live {
 				if !seen[id] {
@@ -114,7 +130,9 @@ func fetch(ctx context.Context, o Options) ([]Agent, error) {
 func runAgent(ctx context.Context, o Options, a Agent) {
 	g, err := games.Get(a.Game)
 	if err != nil {
-		g, _ = games.Get("SOURCE_GENERIC")
+		fmt.Printf("[%s] jogo desconhecido %q: agente parado\n", a.ConnectionID, a.Game)
+		<-ctx.Done()
+		return
 	}
 	runner.Run(ctx, runner.Options{
 		Client:  &api.Client{BaseURL: o.BaseURL, Key: o.Key, Prefix: "/v1/agent-cloud/connections/" + a.ConnectionID},

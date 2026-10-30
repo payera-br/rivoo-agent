@@ -1,34 +1,57 @@
 name: release
+# Tag vX.Y.Z → binaries, signed update manifest, Docker image. A tag with a suffix (v1.2.0-rc1) is
+# a pre-release: it never becomes "latest", so agents and the egg don't pick it up.
 on:
   push:
     tags: ["v*"]
 permissions:
   contents: write
   packages: write
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      API_URL: https://api.rivoo.gg
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with: { go-version: "1.25" }
-      - run: go test ./...
-      - name: Build
+
+      - name: The API the binary points to must be live
+        # The agent sends its key to API_URL: never ship it before that domain answers as Rivoo.
+        run: |
+          body=$(curl -fsS --max-time 15 "$API_URL/health") || { echo "::error::$API_URL/health não responde"; exit 1; }
+          echo "$body" | grep -q '"status":"ok"' || { echo "::error::$API_URL/health respondeu $body"; exit 1; }
+
+      - name: Version
+        id: v
         run: |
           V=${GITHUB_REF_NAME#v}
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          case "$V" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT";; *) echo "prerelease=false" >> "$GITHUB_OUTPUT";; esac
+
+      - run: go test -race ./...
+
+      - name: Build
+        run: |
           mkdir dist
           for t in linux/amd64 linux/arm64 windows/amd64; do
             os=${t%/*}; arch=${t#*/}; ext=; [ $os = windows ] && ext=.exe
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=$V" -o dist/rivoo-agent-$os-$arch$ext ./cmd/rivoo-agent
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -buildvcs=false -trimpath \
+              -ldflags "-s -w -X main.version=${{ steps.v.outputs.version }}" \
+              -o dist/rivoo-agent-$os-$arch$ext ./cmd/rivoo-agent
           done
           cd dist && sha256sum rivoo-agent-* > checksums.txt
-      - name: Manifest (signed)
+
+      - name: Signed update manifest
         env:
           AGENT_SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
         run: |
-          V=${GITHUB_REF_NAME#v}
           BASE=https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}
-          python3 - "$V" "$BASE" > dist/latest.json <<'PY'
+          python3 - "${{ steps.v.outputs.version }}" "$BASE" > dist/latest.json <<'PY'
           import json, sys
           v, base = sys.argv[1], sys.argv[2]
           files = {}
@@ -39,12 +62,25 @@ jobs:
           print(json.dumps({'version': v, 'files': files}, separators=(',', ':')), end='')
           PY
           go run ./scripts/sign dist/latest.json
-      - uses: softprops/action-gh-release@v2
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: dist/*
-      - name: Image
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          IMG=ghcr.io/${GITHUB_REPOSITORY}
-          docker build --build-arg VERSION=${GITHUB_REF_NAME#v} -t $IMG:${GITHUB_REF_NAME#v} -t $IMG:latest .
-          docker push $IMG --all-tags
+          prerelease: ${{ steps.v.outputs.prerelease }}
+          make_latest: ${{ steps.v.outputs.prerelease == 'false' }}
+          generate_release_notes: true
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.v.outputs.version }}
+            ${{ steps.v.outputs.prerelease == 'false' && format('ghcr.io/{0}:latest', github.repository) || '' }}

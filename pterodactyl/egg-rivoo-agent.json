@@ -1,30 +1,71 @@
 {
   "_comment": "Pterodactyl egg for the Rivoo agent. Import in Admin → Nests. Runs next to a game server and delivers Rivoo purchases over RCON.",
-  "meta": { "version": "PTDL_v2", "update_url": null },
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
   "name": "Rivoo Agent",
   "author": "suporte@rivoo.gg",
   "description": "Entrega as compras da Rivoo no servidor de jogo por RCON. Na primeira vez mostra um código no console: digite no painel da Rivoo.",
   "features": null,
-  "docker_images": { "Debian": "ghcr.io/pterodactyl/yolks:debian" },
+  "docker_images": {
+    "Debian": "ghcr.io/pterodactyl/yolks:debian"
+  },
   "file_denylist": [],
   "startup": "./rivoo-agent run",
   "config": {
     "files": "{}",
-    "startup": "{\"done\": \"Rivoo Agent\"}",
+    "startup": "{\"done\": [\"Rivoo Agent\", \"Código de pareamento\"]}",
     "logs": "{}",
     "stop": "^C"
   },
   "scripts": {
     "installation": {
-      "script": "#!/bin/bash\ncd /mnt/server\nARCH=$( [ \"$(uname -m)\" = aarch64 ] && echo arm64 || echo amd64 )\ncurl -fsSL -o rivoo-agent \"https://github.com/payera-br/rivoo-agent/releases/latest/download/rivoo-agent-linux-${ARCH}\"\nchmod +x rivoo-agent\n",
+      "script": "#!/bin/bash\nset -euo pipefail\ncd /mnt/server\nARCH=$( [ \"$(uname -m)\" = aarch64 ] && echo arm64 || echo amd64 )\nBASE=https://github.com/payera-br/rivoo-agent/releases/latest/download\ncurl -fsSL -o rivoo-agent \"$BASE/rivoo-agent-linux-${ARCH}\"\ncurl -fsSL -o checksums.txt \"$BASE/checksums.txt\"\n# Only a binary that matches the release's checksums is installed.\ngrep \" rivoo-agent-linux-${ARCH}$\" checksums.txt | sed \"s/rivoo-agent-linux-${ARCH}/rivoo-agent/\" | sha256sum -c -\nchmod +x rivoo-agent\nrm checksums.txt\n",
       "container": "ghcr.io/pterodactyl/installers:debian",
       "entrypoint": "bash"
     }
   },
   "variables": [
-    { "name": "Jogo", "description": "MINECRAFT_JAVA, RUST, PALWORLD, SEVEN_DAYS, ARK_SE, ARK_SA, CONAN, HYTALE ou SOURCE_GENERIC", "env_variable": "RIVOO_GAME", "default_value": "RUST", "user_viewable": true, "user_editable": true, "rules": "required|string|in:MINECRAFT_JAVA,RUST,PALWORLD,SEVEN_DAYS,ARK_SE,ARK_SA,CONAN,HYTALE,SOURCE_GENERIC", "field_type": "text" },
-    { "name": "IP do RCON", "description": "IP do servidor de jogo (o do painel da hospedagem)", "env_variable": "RCON_HOST", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "required|string|max:253", "field_type": "text" },
-    { "name": "Porta do RCON", "description": "Porta do RCON do jogo", "env_variable": "RCON_PORT", "default_value": "28016", "user_viewable": true, "user_editable": true, "rules": "required|integer|between:1,65535", "field_type": "text" },
-    { "name": "Senha do RCON", "description": "A mesma configurada no jogo", "env_variable": "RCON_PASSWORD", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "required|string|max:200", "field_type": "text" }
+    {
+      "name": "Jogo",
+      "description": "MINECRAFT_JAVA, RUST, PALWORLD, SEVEN_DAYS, ARK_SE, ARK_SA, CONAN, HYTALE ou SOURCE_GENERIC",
+      "env_variable": "RIVOO_GAME",
+      "default_value": "RUST",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:MINECRAFT_JAVA,RUST,PALWORLD,SEVEN_DAYS,ARK_SE,ARK_SA,CONAN,HYTALE,SOURCE_GENERIC",
+      "field_type": "text"
+    },
+    {
+      "name": "IP do RCON",
+      "description": "IP do servidor de jogo (o do painel da hospedagem)",
+      "env_variable": "RCON_HOST",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:253",
+      "field_type": "text"
+    },
+    {
+      "name": "Porta do RCON",
+      "description": "Porta do RCON do jogo",
+      "env_variable": "RCON_PORT",
+      "default_value": "28016",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:1,65535",
+      "field_type": "text"
+    },
+    {
+      "name": "Senha do RCON",
+      "description": "A mesma configurada no jogo",
+      "env_variable": "RCON_PASSWORD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:200",
+      "field_type": "text"
+    }
   ]
 }

@@ -42,6 +42,7 @@ type loop struct {
 	lastErr   string
 	online    int
 	lastBeat  time.Time
+	beatErr   string // lastErr as last reported
 	backoff   time.Duration
 	unacked   map[string]api.AckResult // ran, not yet confirmed to the API: never run again
 	unackedAt []string
@@ -87,7 +88,11 @@ func Run(ctx context.Context, o Options) {
 		} else if players == nil {
 			players = []api.Player{}
 		}
-		l.online = len(players)
+		if len(players) != l.online || l.lastErr != l.beatErr {
+			l.online = len(players)
+			l.lastBeat = time.Time{} // the panel shows who is online and the console state: tell it now
+			l.beat(ctx)
+		}
 		runs, err := l.Client.Poll(ctx, players, l.Wait, limit)
 		if err != nil {
 			if errors.Is(err, api.ErrUnauthorized) {
@@ -197,6 +202,7 @@ func (l *loop) beat(ctx context.Context) {
 	}
 	if err := l.Client.Heartbeat(ctx, l.Version, details); err == nil {
 		l.lastBeat = time.Now()
+		l.beatErr = l.lastErr
 	}
 }
 

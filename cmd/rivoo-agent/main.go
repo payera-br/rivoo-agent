@@ -25,6 +25,7 @@ import (
 	"github.com/payera-br/rivoo-agent/internal/pair"
 	"github.com/payera-br/rivoo-agent/internal/rcon"
 	"github.com/payera-br/rivoo-agent/internal/runner"
+	"golang.org/x/term"
 )
 
 var version = "dev"
@@ -168,10 +169,8 @@ func ask(cfg *config.Config) error {
 	return nil
 }
 
-func isTerminal() bool {
-	st, err := os.Stdin.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
-}
+// isTerminal: a real console (not /dev/null, a pipe or a panel's stdin).
+func isTerminal() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // autoUpdate is replaced in update.go once signed releases exist.
 var autoUpdate = func(context.Context) {}

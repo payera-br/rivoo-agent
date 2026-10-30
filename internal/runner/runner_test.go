@@ -210,3 +210,17 @@ func TestAckRetriedWithoutRunningAgain(t *testing.T) {
 		t.Fatalf("ran %v", *ran)
 	}
 }
+
+func TestHeartbeatGoesOutWhenWhoIsOnlineChanges(t *testing.T) {
+	f := &fakeAPI{}
+	srv := f.server(t)
+	g, _ := games.Get("RUST")
+	dial, _ := console()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 20 * time.Millisecond, HeartbeatEvery: time.Hour, MaxBackoff: 50 * time.Millisecond})
+	_, hbs := f.snapshot()
+	if len(hbs) < 2 || hbs[len(hbs)-1]["playersOnline"] != float64(1) {
+		t.Fatalf("heartbeats %+v", hbs)
+	}
+}

@@ -1,0 +1,11 @@
+# Real Minecraft server for the end-to-end run. Starting it means accepting Mojang's EULA:
+# set EULA=TRUE yourself (https://aka.ms/MinecraftEULA).
+services:
+  minecraft:
+    image: itzg/minecraft-server:latest
+    environment:
+      EULA: "${EULA:-FALSE}"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: pw
+      ONLINE_MODE: "false"
+    ports: ["25565:25565", "25575:25575"]

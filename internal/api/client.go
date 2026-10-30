@@ -177,15 +177,17 @@ func (c *Client) Heartbeat(ctx context.Context, version string, details map[stri
 	return c.do(ctx, http.MethodPost, c.prefix()+"/heartbeat", c.bearer(), map[string]any{"agentVersion": version, "details": details}, nil)
 }
 
-// Poll long-polls the queue. With players, only runs that can run now come back.
+// Poll long-polls the queue. With players (even none), only runs that can run now come back.
 func (c *Client) Poll(ctx context.Context, players []Player, wait, limit int) ([]Run, error) {
-	if players == nil {
-		players = []Player{}
+	body := map[string]any{"wait": wait, "limit": limit}
+	// nil = the game can't list players: every due run comes back.
+	if players != nil {
+		body["players"] = players
 	}
 	var out struct {
 		Data []Run `json:"data"`
 	}
-	err := c.do(ctx, http.MethodPost, c.prefix()+"/commands", c.bearer(), map[string]any{"wait": wait, "limit": limit, "players": players}, &out)
+	err := c.do(ctx, http.MethodPost, c.prefix()+"/commands", c.bearer(), body, &out)
 	return out.Data, err
 }
 

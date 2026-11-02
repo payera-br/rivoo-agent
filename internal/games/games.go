@@ -25,8 +25,18 @@ type Game interface {
 	Failed(output string) (bool, string)
 }
 
+// Status is how full the server is. Queue counts who waits to get in.
+type Status struct{ Players, MaxPlayers, Queue int }
+
+// Statuser is implemented by games whose console reports server load and queue.
+type Statuser interface {
+	Status(ctx context.Context, c rcon.Conn) (Status, error)
+}
+
 type game struct {
 	name, protocol, listCmd string
+	statusCmd               string
+	parseStatus             func(string) (Status, error)
 	parse                   func(string) []api.Player
 	errors                  []string
 	prepare                 func(ctx context.Context, c rcon.Conn, run api.Run) (string, error)
@@ -44,6 +54,25 @@ func (g *game) Players(ctx context.Context, c rcon.Conn) ([]api.Player, bool, er
 		return nil, true, err
 	}
 	return g.parse(out), true, nil
+}
+
+// Status reads the server load; it errors when the game has no status command or the answer
+// can't be read.
+func (g *game) Status(ctx context.Context, c rcon.Conn) (Status, error) {
+	if g.statusCmd == "" {
+		return Status{}, fmt.Errorf("%s não informa o estado do servidor", g.name)
+	}
+	out, err := c.Exec(ctx, g.statusCmd)
+	if err != nil {
+		return Status{}, err
+	}
+	return g.parseStatus(out)
+}
+
+// HasStatus reports whether the game can tell its load and queue.
+func HasStatus(g Game) bool {
+	gg, ok := g.(*game)
+	return ok && gg.statusCmd != ""
 }
 
 func (g *game) Prepare(ctx context.Context, c rcon.Conn, run api.Run) (string, error) {
@@ -147,7 +176,7 @@ func init() {
 		return ps
 	}})
 
-	register(&game{name: "RUST", protocol: "webrcon", listCmd: "playerlist", errors: []string{"' not found", "couldn't find player"}, parse: func(out string) []api.Player {
+	register(&game{name: "RUST", protocol: "webrcon", listCmd: "playerlist", statusCmd: "serverinfo", parseStatus: rustStatus, errors: []string{"' not found", "couldn't find player"}, parse: func(out string) []api.Player {
 		var rows []struct{ SteamID, DisplayName string }
 		if json.Unmarshal([]byte(out), &rows) != nil {
 			return nil
@@ -237,4 +266,28 @@ func conanIndex(ctx context.Context, c rcon.Conn, run api.Run) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("jogador não está online no Conan")
+}
+
+// rustStatus reads `serverinfo`: players, capacity and the queue (waiting + joining).
+func rustStatus(out string) (Status, error) {
+	var info struct {
+		Players, MaxPlayers, Queued, Joining *int
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &info); err != nil {
+		return Status{}, fmt.Errorf("serverinfo inválido: %w", err)
+	}
+	if info.Players == nil || info.MaxPlayers == nil {
+		return Status{}, fmt.Errorf("serverinfo sem Players/MaxPlayers")
+	}
+	st := Status{Players: *info.Players, MaxPlayers: *info.MaxPlayers}
+	if info.Queued != nil {
+		st.Queue += *info.Queued
+	}
+	if info.Joining != nil {
+		st.Queue += *info.Joining
+	}
+	if st.Players < 0 || st.MaxPlayers < 0 || st.Queue < 0 {
+		return Status{}, fmt.Errorf("serverinfo com números negativos")
+	}
+	return st, nil
 }

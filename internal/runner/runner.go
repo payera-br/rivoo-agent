@@ -50,6 +50,7 @@ type loop struct {
 	lastErr   string
 	beatErr   string // lastErr as last reported
 	online    int
+	status    *games.Status // nil when the game has none or the read failed
 	players   []api.Player
 	listedAt  time.Time
 	lastBeat  time.Time
@@ -141,17 +142,35 @@ func (l *loop) list(ctx context.Context) bool {
 		return false
 	}
 	l.listedAt = time.Now()
+	statusChanged := l.readStatus(ctx)
 	if !hasList {
 		l.players = nil // the API then gives every due run
 	} else {
 		l.players = clean(players)
 	}
-	if len(l.players) != l.online || l.lastErr != l.beatErr {
+	if len(l.players) != l.online || l.lastErr != l.beatErr || statusChanged {
 		l.online = len(l.players)
 		l.lastBeat = time.Time{} // the panel shows who is online and the console state: tell it now
 		l.beat(ctx)
 	}
 	return true
+}
+
+// readStatus takes the server load for the heartbeat; true when it changed. A failed read just
+// leaves the status out of the heartbeat.
+func (l *loop) readStatus(ctx context.Context) bool {
+	st, ok := l.Game.(games.Statuser)
+	if !ok || !games.HasStatus(l.Game) {
+		return false
+	}
+	s, err := st.Status(ctx, l.conn)
+	var next *games.Status
+	if err == nil {
+		next = &s
+	}
+	changed := (next == nil) != (l.status == nil) || next != nil && *next != *l.status
+	l.status = next
+	return changed
 }
 
 // stillOnline re-checks a stale list before an online-only run.
@@ -283,6 +302,9 @@ func (l *loop) beat(ctx context.Context) {
 		return
 	}
 	details := map[string]any{"agent": "rcon", "game": l.Game.Name(), "protocol": l.Game.Protocol(), "playersOnline": l.online}
+	if l.status != nil {
+		details["status"] = map[string]int{"players": l.status.Players, "maxPlayers": l.status.MaxPlayers, "queue": l.status.Queue}
+	}
 	if l.lastErr != "" {
 		details["lastRconError"] = l.lastErr
 	}

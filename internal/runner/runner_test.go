@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +91,9 @@ func (c *fakeConsole) Exec(_ context.Context, cmd string) (string, error) {
 	}
 	if cmd == "playerlist" {
 		return `[{"SteamID":"76561198000000001","DisplayName":"Ana"}]`, nil
+	}
+	if cmd == "serverinfo" {
+		return `{"Players":1,"MaxPlayers":100,"Queued":2,"Joining":1}`, nil
 	}
 	if cmd == "boom" {
 		c.dead = true
@@ -231,6 +235,7 @@ type scriptedConsole struct {
 	mu      *sync.Mutex
 	ran     *[]string
 	players func() string
+	info    func() string // serverinfo; nil answers something unreadable
 }
 
 func (c *scriptedConsole) Exec(_ context.Context, cmd string) (string, error) {
@@ -238,6 +243,12 @@ func (c *scriptedConsole) Exec(_ context.Context, cmd string) (string, error) {
 	defer c.mu.Unlock()
 	if cmd == "playerlist" {
 		return c.players(), nil
+	}
+	if cmd == "serverinfo" {
+		if c.info == nil {
+			return "not json", nil
+		}
+		return c.info(), nil
 	}
 	*c.ran = append(*c.ran, cmd)
 	if cmd == "freeze" {
@@ -330,5 +341,82 @@ func TestPlayerWhoLeftDuringTheWaitKeepsTheRunQueued(t *testing.T) {
 	defer mu.Unlock()
 	if len(ran) != 0 {
 		t.Fatalf("ran for a player who left: %v", ran)
+	}
+}
+
+func lastStatus(hbs []map[string]any) (map[string]any, bool) {
+	if len(hbs) == 0 {
+		return nil, false
+	}
+	st, ok := hbs[len(hbs)-1]["status"].(map[string]any)
+	return st, ok
+}
+
+func TestHeartbeatCarriesPlayersAndQueue(t *testing.T) {
+	f := &fakeAPI{}
+	dial, _ := console()
+	runFor(t, f, dial, 200*time.Millisecond)
+	_, hbs := f.snapshot()
+	st, ok := lastStatus(hbs)
+	if !ok || st["players"] != float64(1) || st["maxPlayers"] != float64(100) || st["queue"] != float64(3) {
+		t.Fatalf("heartbeats %+v", hbs)
+	}
+}
+
+func TestHeartbeatGoesOutWhenQueueChanges(t *testing.T) {
+	f := &fakeAPI{}
+	srv := f.server(t)
+	g, _ := games.Get("RUST")
+	var mu, qmu sync.Mutex
+	var ran []string
+	queue := 0
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string { return "[]" }, info: func() string {
+			qmu.Lock()
+			defer qmu.Unlock()
+			return fmt.Sprintf(`{"Players":0,"MaxPlayers":50,"Queued":%d,"Joining":0}`, queue)
+		}}, nil
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		qmu.Lock()
+		queue = 7
+		qmu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	// HeartbeatEvery is an hour: only a change can send a second heartbeat.
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 20 * time.Millisecond, HeartbeatEvery: time.Hour, MaxBackoff: 50 * time.Millisecond})
+	_, hbs := f.snapshot()
+	// the very first heartbeat (connect) has no status yet
+	var first map[string]any
+	for _, h := range hbs {
+		if s, ok := h["status"].(map[string]any); ok {
+			first = s
+			break
+		}
+	}
+	st, ok := lastStatus(hbs)
+	if len(hbs) < 3 || first["queue"] != float64(0) || !ok || st["queue"] != float64(7) {
+		t.Fatalf("heartbeats %+v", hbs)
+	}
+}
+
+func TestUnreadableServerinfoLeavesStatusOut(t *testing.T) {
+	f := &fakeAPI{}
+	var mu sync.Mutex
+	var ran []string
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string { return "[]" }}, nil
+	}
+	runFor(t, f, dial, 200*time.Millisecond)
+	_, hbs := f.snapshot()
+	if len(hbs) == 0 {
+		t.Fatal("no heartbeat")
+	}
+	for _, h := range hbs {
+		if _, has := h["status"]; has {
+			t.Fatalf("status should be omitted: %+v", h)
+		}
 	}
 }

@@ -169,3 +169,43 @@ func TestMinecraftErrorsAndNoBroadNotFound(t *testing.T) {
 		t.Fatal("a success that mentions 'not found' failed")
 	}
 }
+
+func TestRustStatus(t *testing.T) {
+	g, _ := Get("RUST")
+	st, ok := g.(Statuser)
+	if !ok || !HasStatus(g) {
+		t.Fatal("RUST should report status")
+	}
+	cases := []struct {
+		name, out string
+		want      Status
+		fails     bool
+	}{
+		{"fixture", fixture(t, "rust-serverinfo"), Status{Players: 137, MaxPlayers: 200, Queue: 15}, false},
+		{"no queue fields", `{"Players":3,"MaxPlayers":50}`, Status{Players: 3, MaxPlayers: 50}, false},
+		{"empty server", `{"Players":0,"MaxPlayers":50,"Queued":0,"Joining":0}`, Status{MaxPlayers: 50}, false},
+		{"not json", "Unknown command", Status{}, true},
+		{"empty answer", "", Status{}, true},
+		{"missing players", `{"Hostname":"x"}`, Status{}, true},
+		{"negative", `{"Players":1,"MaxPlayers":50,"Queued":-4}`, Status{}, true},
+	}
+	for _, tc := range cases {
+		s := &scripted{answers: map[string]string{"serverinfo": tc.out}}
+		got, err := st.Status(context.Background(), s)
+		if (err != nil) != tc.fails || got != tc.want {
+			t.Fatalf("%s: got %+v err %v", tc.name, got, err)
+		}
+		if len(s.ran) != 1 || s.ran[0] != "serverinfo" {
+			t.Fatalf("%s: ran %v", tc.name, s.ran)
+		}
+	}
+}
+
+func TestOnlyRustReportsStatus(t *testing.T) {
+	for _, n := range []string{"MINECRAFT_JAVA", "PALWORLD", "SOURCE_GENERIC"} {
+		g, _ := Get(n)
+		if HasStatus(g) {
+			t.Fatalf("%s should not report status", n)
+		}
+	}
+}

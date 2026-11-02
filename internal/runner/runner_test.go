@@ -463,10 +463,17 @@ func TestFailedStatusReadKeepsLastGoodOne(t *testing.T) {
 			return `{"Players":5,"MaxPlayers":100,"Queued":4}`
 		}}, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// The good read comes first and goes stale at 2 x StatusEvery = 100 ms: the run ends before that,
+	// after the next read (~50 ms) failed, with regular heartbeats every 20 ms in between.
+	ctx, cancel := context.WithTimeout(context.Background(), 95*time.Millisecond)
 	defer cancel()
-	// regular heartbeat every 100 ms; the good read is far from stale (2 x 1 s)
-	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 10 * time.Millisecond, HeartbeatEvery: 100 * time.Millisecond, StatusEvery: time.Second, MaxBackoff: 50 * time.Millisecond})
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 5 * time.Millisecond, HeartbeatEvery: 20 * time.Millisecond, StatusEvery: 50 * time.Millisecond, MaxBackoff: 50 * time.Millisecond})
+	nmu.Lock()
+	n := reads
+	nmu.Unlock()
+	if n < 2 {
+		t.Fatalf("the failed read was never reached (%d reads)", n)
+	}
 	_, hbs := f.snapshot()
 	st, ok := lastStatus(hbs)
 	if !ok || st["queue"] != float64(4) {

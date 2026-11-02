@@ -2,6 +2,7 @@ package games
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -173,7 +174,7 @@ func TestMinecraftErrorsAndNoBroadNotFound(t *testing.T) {
 func TestRustStatus(t *testing.T) {
 	g, _ := Get("RUST")
 	st, ok := g.(Statuser)
-	if !ok || !HasStatus(g) {
+	if !ok {
 		t.Fatal("RUST should report status")
 	}
 	cases := []struct {
@@ -204,8 +205,8 @@ func TestRustStatus(t *testing.T) {
 func TestOnlyRustReportsStatus(t *testing.T) {
 	for _, n := range []string{"MINECRAFT_JAVA", "PALWORLD", "SOURCE_GENERIC"} {
 		g, _ := Get(n)
-		if HasStatus(g) {
-			t.Fatalf("%s should not report status", n)
+		if _, err := g.(Statuser).Status(context.Background(), &scripted{}); !errors.Is(err, ErrNoStatus) {
+			t.Fatalf("%s should not report status: %v", n, err)
 		}
 	}
 }

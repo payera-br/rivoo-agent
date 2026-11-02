@@ -5,6 +5,7 @@ package games
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -56,23 +57,20 @@ func (g *game) Players(ctx context.Context, c rcon.Conn) ([]api.Player, bool, er
 	return g.parse(out), true, nil
 }
 
-// Status reads the server load; it errors when the game has no status command or the answer
-// can't be read.
+// ErrNoStatus means the game's console can't tell its load.
+var ErrNoStatus = errors.New("o jogo não informa o estado do servidor")
+
+// Status reads the server load; it errors when the game has no status command (ErrNoStatus) or
+// the answer can't be read.
 func (g *game) Status(ctx context.Context, c rcon.Conn) (Status, error) {
 	if g.statusCmd == "" {
-		return Status{}, fmt.Errorf("%s não informa o estado do servidor", g.name)
+		return Status{}, ErrNoStatus
 	}
 	out, err := c.Exec(ctx, g.statusCmd)
 	if err != nil {
 		return Status{}, err
 	}
 	return g.parseStatus(out)
-}
-
-// HasStatus reports whether the game can tell its load and queue.
-func HasStatus(g Game) bool {
-	gg, ok := g.(*game)
-	return ok && gg.statusCmd != ""
 }
 
 func (g *game) Prepare(ctx context.Context, c rcon.Conn, run api.Run) (string, error) {

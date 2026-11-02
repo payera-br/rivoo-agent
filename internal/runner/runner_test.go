@@ -386,7 +386,7 @@ func TestHeartbeatGoesOutWhenQueueChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	// HeartbeatEvery is an hour: only a change can send a second heartbeat.
-	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 20 * time.Millisecond, HeartbeatEvery: time.Hour, MaxBackoff: 50 * time.Millisecond})
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 20 * time.Millisecond, HeartbeatEvery: time.Hour, StatusEvery: 20 * time.Millisecond, ForceEvery: 20 * time.Millisecond, MaxBackoff: 50 * time.Millisecond})
 	_, hbs := f.snapshot()
 	// the very first heartbeat (connect) has no status yet
 	var first map[string]any
@@ -418,5 +418,58 @@ func TestUnreadableServerinfoLeavesStatusOut(t *testing.T) {
 		if _, has := h["status"]; has {
 			t.Fatalf("status should be omitted: %+v", h)
 		}
+	}
+}
+
+func TestStatusChurnDoesNotStormHeartbeats(t *testing.T) {
+	f := &fakeAPI{}
+	srv := f.server(t)
+	g, _ := games.Get("RUST")
+	var mu, nmu sync.Mutex
+	var ran []string
+	n := 0
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string { return "[]" }, info: func() string {
+			nmu.Lock()
+			defer nmu.Unlock()
+			n++ // players and queue move on every read
+			return fmt.Sprintf(`{"Players":%d,"MaxPlayers":100,"Queued":%d}`, n*20%100, n%2)
+		}}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 10 * time.Millisecond, HeartbeatEvery: time.Hour, StatusEvery: 10 * time.Millisecond, ForceEvery: 200 * time.Millisecond, MaxBackoff: 50 * time.Millisecond})
+	_, hbs := f.snapshot()
+	if len(hbs) < 2 || len(hbs) > 5 { // connect + at most one per 200 ms
+		t.Fatalf("%d heartbeats: %+v", len(hbs), hbs)
+	}
+}
+
+func TestFailedStatusReadKeepsLastGoodOne(t *testing.T) {
+	f := &fakeAPI{}
+	srv := f.server(t)
+	g, _ := games.Get("RUST")
+	var mu, nmu sync.Mutex
+	var ran []string
+	reads := 0
+	dial := func(context.Context) (rcon.Conn, error) {
+		return &scriptedConsole{mu: &mu, ran: &ran, players: func() string { return "[]" }, info: func() string {
+			nmu.Lock()
+			defer nmu.Unlock()
+			reads++
+			if reads > 1 {
+				return "garbage"
+			}
+			return `{"Players":5,"MaxPlayers":100,"Queued":4}`
+		}}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	// regular heartbeat every 100 ms; the good read is far from stale (2 x 1 s)
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "t", Pause: 10 * time.Millisecond, HeartbeatEvery: 100 * time.Millisecond, StatusEvery: time.Second, MaxBackoff: 50 * time.Millisecond})
+	_, hbs := f.snapshot()
+	st, ok := lastStatus(hbs)
+	if !ok || st["queue"] != float64(4) {
+		t.Fatalf("heartbeats %+v", hbs)
 	}
 }

@@ -29,6 +29,10 @@ type Options struct {
 	MaxBackoff     time.Duration
 	// StaleAfter: a player list older than this is taken again before running online-only runs.
 	StaleAfter time.Duration
+	// StatusEvery: how often the game's load and queue are read (default 30 s).
+	StatusEvery time.Duration
+	// ForceEvery: the least time between heartbeats forced by a status change (default 15 s).
+	ForceEvery time.Duration
 }
 
 const (
@@ -37,6 +41,8 @@ const (
 	defaultHeartbeat = 60 * time.Second
 	defaultBackoff   = 60 * time.Second
 	defaultStale     = 5 * time.Second
+	defaultStatus    = 30 * time.Second
+	defaultForce     = 15 * time.Second
 	limit            = 50
 	maxOutput        = 2000
 	// On the way out, what ran still gets reported for this long.
@@ -50,6 +56,12 @@ type loop struct {
 	lastErr   string
 	beatErr   string // lastErr as last reported
 	online    int
+	status    *games.Status // last good read; nil when the game has none or reads keep failing
+	sent      *games.Status // what the last heartbeat carried
+	statusAt  time.Time     // last read attempt
+	goodAt    time.Time     // last good read
+	forcedAt  time.Time     // last heartbeat forced by a status change
+	noStatus  bool          // the game can't tell its load
 	players   []api.Player
 	listedAt  time.Time
 	lastBeat  time.Time
@@ -76,6 +88,12 @@ func Run(ctx context.Context, o Options) {
 	if o.StaleAfter == 0 {
 		o.StaleAfter = defaultStale
 	}
+	if o.StatusEvery == 0 {
+		o.StatusEvery = defaultStatus
+	}
+	if o.ForceEvery == 0 {
+		o.ForceEvery = defaultForce
+	}
 	if o.Logf == nil {
 		o.Logf = log.Printf
 	}
@@ -99,7 +117,7 @@ func Run(ctx context.Context, o Options) {
 			continue
 		}
 		l.backoff = 0
-		if !l.list(ctx) {
+		if !l.list(ctx, true) {
 			continue
 		}
 		runs, err := l.Client.Poll(ctx, l.players, l.Wait, limit)
@@ -134,19 +152,20 @@ func Run(ctx context.Context, o Options) {
 }
 
 // list takes who is online; false when the console dropped.
-func (l *loop) list(ctx context.Context) bool {
+func (l *loop) list(ctx context.Context, withStatus bool) bool {
 	players, hasList, err := l.Game.Players(ctx, l.conn)
 	if err != nil {
 		l.drop(err)
 		return false
 	}
 	l.listedAt = time.Now()
+	statusChanged := withStatus && l.readStatus(ctx)
 	if !hasList {
 		l.players = nil // the API then gives every due run
 	} else {
 		l.players = clean(players)
 	}
-	if len(l.players) != l.online || l.lastErr != l.beatErr {
+	if len(l.players) != l.online || l.lastErr != l.beatErr || statusChanged {
 		l.online = len(l.players)
 		l.lastBeat = time.Time{} // the panel shows who is online and the console state: tell it now
 		l.beat(ctx)
@@ -154,12 +173,59 @@ func (l *loop) list(ctx context.Context) bool {
 	return true
 }
 
+// readStatus takes the server load, at most every StatusEvery. A failed read keeps the last good
+// status until it is older than twice that. True when the change is big enough to send a
+// heartbeat now: the queue going to or from zero, or players moving by 10% of capacity (min 1),
+// and not sooner than ForceEvery after the last such heartbeat. Smaller changes ride the next
+// regular heartbeat.
+func (l *loop) readStatus(ctx context.Context) bool {
+	st, ok := l.Game.(games.Statuser)
+	if !ok || l.noStatus || time.Since(l.statusAt) < l.StatusEvery {
+		return false
+	}
+	l.statusAt = time.Now()
+	s, err := st.Status(ctx, l.conn)
+	switch {
+	case errors.Is(err, games.ErrNoStatus):
+		l.noStatus = true
+		return false
+	case err == nil:
+		l.status, l.goodAt = &s, time.Now()
+	case l.status != nil && time.Since(l.goodAt) > 2*l.StatusEvery:
+		l.status = nil
+	}
+	if l.status == nil || time.Since(l.forcedAt) < l.ForceEvery || !bigChange(l.sent, l.status) {
+		return false
+	}
+	l.forcedAt = time.Now()
+	return true
+}
+
+// bigChange: the queue goes 0<->positive, or players move by 10% of capacity (at least 1).
+func bigChange(sent, now *games.Status) bool {
+	if sent == nil {
+		return true // first status: don't wait for the next regular heartbeat
+	}
+	if (sent.Queue > 0) != (now.Queue > 0) {
+		return true
+	}
+	step := now.MaxPlayers / 10
+	if step < 1 {
+		step = 1
+	}
+	d := now.Players - sent.Players
+	if d < 0 {
+		d = -d
+	}
+	return d >= step
+}
+
 // stillOnline re-checks a stale list before an online-only run.
 func (l *loop) stillOnline(ctx context.Context, r api.Run) bool {
 	if l.players == nil {
 		return true // no list in this game
 	}
-	if time.Since(l.listedAt) > l.StaleAfter && !l.list(ctx) {
+	if time.Since(l.listedAt) > l.StaleAfter && !l.list(ctx, false) {
 		return false
 	}
 	for _, p := range l.players {
@@ -283,6 +349,9 @@ func (l *loop) beat(ctx context.Context) {
 		return
 	}
 	details := map[string]any{"agent": "rcon", "game": l.Game.Name(), "protocol": l.Game.Protocol(), "playersOnline": l.online}
+	if l.status != nil {
+		details["status"] = map[string]int{"players": l.status.Players, "maxPlayers": l.status.MaxPlayers, "queue": l.status.Queue}
+	}
 	if l.lastErr != "" {
 		details["lastRconError"] = l.lastErr
 	}
@@ -292,6 +361,7 @@ func (l *loop) beat(ctx context.Context) {
 	if err := l.Client.Heartbeat(ctx, l.Version, details); err == nil {
 		l.lastBeat = time.Now()
 		l.beatErr = l.lastErr
+		l.sent = l.status
 	}
 }
 

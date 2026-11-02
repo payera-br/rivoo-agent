@@ -1,0 +1,18 @@
+{
+  "Hostname": "Servidor Exemplo | 2x | Vanilla BR",
+  "MaxPlayers": 200,
+  "Players": 137,
+  "Queued": 12,
+  "Joining": 3,
+  "EntityCount": 285114,
+  "GameTime": "2026-11-02T14:25:00",
+  "Uptime": 482113,
+  "Map": "Procedural Map",
+  "Framerate": 59.8,
+  "Memory": 6120,
+  "Collections": 14,
+  "NetworkIn": 1204,
+  "NetworkOut": 9871,
+  "Restarting": false,
+  "SaveCreatedTime": "2026-11-02T14:10:03.1234567-03:00"
+}

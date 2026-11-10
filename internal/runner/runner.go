@@ -33,6 +33,8 @@ type Options struct {
 	StatusEvery time.Duration
 	// ForceEvery: the least time between heartbeats forced by a status change (default 15 s).
 	ForceEvery time.Duration
+	// AckStore keeps unconfirmed results across restarts (default: memory only).
+	AckStore AckStore
 }
 
 const (
@@ -68,6 +70,9 @@ type loop struct {
 	backoff   time.Duration
 	unacked   map[string]api.AckResult // ran, not yet confirmed to the API: never run again
 	unackedAt []string
+	// unsaved: the last Save failed, so nothing new runs until it succeeds (a command that ran
+	// without its result on disk could run twice after a restart).
+	unsaved bool
 }
 
 // Run delivers until ctx ends. A down console or API is retried; what already ran is reported
@@ -97,7 +102,21 @@ func Run(ctx context.Context, o Options) {
 	if o.Logf == nil {
 		o.Logf = log.Printf
 	}
+	if o.AckStore == nil {
+		o.AckStore = NewMemAckStore()
+	}
 	l := &loop{Options: o, unacked: map[string]api.AckResult{}}
+	saved, err := o.AckStore.Load()
+	if err != nil {
+		// Unreadable file: nothing to recover; the next Save replaces it.
+		l.Logf("não consegui ler os resultados guardados (%v): comandos que já rodaram e não foram confirmados podem rodar de novo", err)
+	}
+	for _, a := range saved {
+		if _, dup := l.unacked[a.ID]; !dup {
+			l.unackedAt = append(l.unackedAt, a.ID)
+		}
+		l.unacked[a.ID] = a
+	}
 	defer func() {
 		if len(l.unackedAt) > 0 {
 			fc, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalFlush)
@@ -113,6 +132,10 @@ func Run(ctx context.Context, o Options) {
 	for ctx.Err() == nil {
 		l.beat(ctx)
 		if !l.flushAcks(ctx) || !l.ensureConn(ctx) {
+			l.sleep(ctx)
+			continue
+		}
+		if l.unsaved && !l.persist() {
 			l.sleep(ctx)
 			continue
 		}
@@ -142,6 +165,9 @@ func Run(ctx context.Context, o Options) {
 			}
 			if !l.exec(ctx, r) {
 				break // console dropped: reconnect, the rest stays queued
+			}
+			if l.unsaved {
+				break // the result is not on disk: run nothing else until it is
 			}
 		}
 		l.flushAcks(ctx)
@@ -294,9 +320,34 @@ func (l *loop) exec(ctx context.Context, r api.Run) bool {
 	return true
 }
 
+// record keeps a result in memory and on disk. If the disk refuses, unsaved is set and the loop
+// stops executing until persist succeeds.
 func (l *loop) record(a api.AckResult) {
+	if _, dup := l.unacked[a.ID]; !dup {
+		l.unackedAt = append(l.unackedAt, a.ID)
+	}
 	l.unacked[a.ID] = a
-	l.unackedAt = append(l.unackedAt, a.ID)
+	l.persist()
+}
+
+// persist writes every unconfirmed result; false (and unsaved set) when it could not.
+func (l *loop) persist() bool {
+	batch := make([]api.AckResult, 0, len(l.unackedAt))
+	for _, id := range l.unackedAt {
+		batch = append(batch, l.unacked[id])
+	}
+	if err := l.AckStore.Save(batch); err != nil {
+		if !l.unsaved {
+			l.Logf("não consegui gravar o resultado dos comandos (%v): nada novo roda até conseguir", err)
+		}
+		l.unsaved = true
+		return false
+	}
+	if l.unsaved {
+		l.Logf("resultados gravados de novo: a entrega continua")
+	}
+	l.unsaved = false
+	return true
 }
 
 // flushAcks reports what ran; false while the API refuses (then nothing new runs).
@@ -311,8 +362,13 @@ func (l *loop) flushAcks(ctx context.Context) bool {
 	if err := l.Client.Ack(ctx, batch); err != nil {
 		return false
 	}
+	// The API answered (acked or ignored): every sent id is final, so none is kept or re-sent.
 	l.unacked = map[string]api.AckResult{}
 	l.unackedAt = nil
+	if err := l.AckStore.Save(nil); err != nil {
+		// Harmless: a stale entry is only re-sent later and answered as ignored.
+		l.Logf("não consegui limpar os resultados já confirmados: %v", err)
+	}
 	return true
 }
 

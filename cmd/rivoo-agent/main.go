@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,6 +105,8 @@ func run(ctx context.Context) error {
 		Client:  client,
 		Game:    game,
 		Version: version,
+		// Next to the configuration: results not yet confirmed survive a restart.
+		AckStore: runner.NewFileAckStore(filepath.Join(filepath.Dir(path), "rivoo-agent-acks.json")),
 		Dial: func(ctx context.Context) (rcon.Conn, error) {
 			return rcon.Dial(ctx, game.Protocol(), cfg.RconHost, cfg.RconPort, cfg.RconPass)
 		},

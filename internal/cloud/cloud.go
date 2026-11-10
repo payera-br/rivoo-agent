@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -33,6 +36,9 @@ type Options struct {
 	Every                 time.Duration
 	// Start runs one agent until ctx ends (tests replace it).
 	Start func(ctx context.Context, a Agent)
+	// StateDir holds acks-<connectionId>.json (default $RIVOO_AGENT_STATE_DIR). Empty: results
+	// not yet confirmed live in memory only and are lost on restart.
+	StateDir string
 }
 
 type running struct {
@@ -45,6 +51,12 @@ type running struct {
 func Work(ctx context.Context, o Options) {
 	if o.Every == 0 {
 		o.Every = 30 * time.Second
+	}
+	if o.StateDir == "" {
+		o.StateDir = os.Getenv("RIVOO_AGENT_STATE_DIR")
+	}
+	if o.StateDir == "" && o.Start == nil {
+		fmt.Println("RIVOO_AGENT_STATE_DIR não definido: resultados ainda não confirmados ficam só na memória e se perdem se o worker reiniciar")
 	}
 	if o.Start == nil {
 		o.Start = func(ctx context.Context, a Agent) { runAgent(ctx, o, a) }
@@ -135,11 +147,12 @@ func runAgent(ctx context.Context, o Options, a Agent) {
 		return
 	}
 	runner.Run(ctx, runner.Options{
-		Client:  &api.Client{BaseURL: o.BaseURL, Key: o.Key, Prefix: "/v1/agent-cloud/connections/" + a.ConnectionID},
-		Game:    g,
-		Version: o.Version,
-		Mode:    "cloud",
-		Logf:    func(f string, args ...any) { fmt.Printf("[%s] "+f+"\n", append([]any{a.ConnectionID}, args...)...) },
+		AckStore: ackStore(o.StateDir, a.ConnectionID),
+		Client:   &api.Client{BaseURL: o.BaseURL, Key: o.Key, Prefix: "/v1/agent-cloud/connections/" + a.ConnectionID},
+		Game:     g,
+		Version:  o.Version,
+		Mode:     "cloud",
+		Logf:     func(f string, args ...any) { fmt.Printf("[%s] "+f+"\n", append([]any{a.ConnectionID}, args...)...) },
 		Dial: func(ctx context.Context) (rcon.Conn, error) {
 			ip, err := resolvePublic(ctx, a.Host)
 			if err != nil {
@@ -148,6 +161,16 @@ func runAgent(ctx context.Context, o Options, a Agent) {
 			return rcon.Dial(ctx, a.Protocol, ip, a.Port, a.Password)
 		},
 	})
+}
+
+var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// ackStore is the connection's file in the state dir; memory only without one.
+func ackStore(dir, connectionID string) runner.AckStore {
+	if dir == "" || !safeID.MatchString(connectionID) {
+		return runner.NewMemAckStore()
+	}
+	return runner.NewFileAckStore(filepath.Join(dir, "acks-"+connectionID+".json"))
 }
 
 var errInternal = errors.New("o endereço do servidor aponta para uma rede interna")

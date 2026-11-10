@@ -94,7 +94,7 @@ docker run -d --name rivoo-agent --restart unless-stopped --network host \
 docker logs -f rivoo-agent   # o código de pareamento aparece aqui
 ```
 
-O volume `/data` guarda a chave: sem ele, recriar o contêiner pede pareamento de novo. A imagem não
+O volume `/data` guarda a chave e os resultados ainda não confirmados à Rivoo (`rivoo-agent-acks.json`): sem ele, recriar o contêiner pede pareamento de novo, e um comando que rodou pouco antes pode rodar outra vez. A imagem não
 se atualiza sozinha; atualize puxando a tag nova.
 
 **Pterodactyl**: importe [`pterodactyl/egg-rivoo-agent.json`](pterodactyl/egg-rivoo-agent.json) em
@@ -110,6 +110,7 @@ senha do RCON. O código de pareamento aparece no console.
 | `RCON_PORT` | porta do console | a do jogo |
 | `RCON_PASSWORD` | senha do console | pergunta |
 | `RIVOO_CONFIG` | caminho do arquivo de configuração | `rivoo-agent.json` ao lado do binário |
+| `RIVOO_AGENT_STATE_DIR` | modo nuvem (`rivoo-agent cloud`): pasta (monte um volume) onde cada conexão guarda `acks-<id>.json`, os resultados ainda não confirmados | sem ela, só memória: um reinício pode repetir comandos |
 | `RIVOO_AUTO_UPDATE` | `false` desliga a atualização automática | ligada (desligada na imagem Docker) |
 
 Variáveis valem sobre o arquivo. O arquivo é gravado só para o dono (`0600`): ele guarda a chave da

@@ -108,11 +108,87 @@ func (c *fakeConsole) Exec(_ context.Context, cmd string) (string, error) {
 func (c *fakeConsole) Close() error { return nil }
 
 func runFor(t *testing.T, f *fakeAPI, dial func(context.Context) (rcon.Conn, error), d time.Duration) {
+	runWithStore(t, f, dial, d, nil)
+}
+
+func runWithStore(t *testing.T, f *fakeAPI, dial func(context.Context) (rcon.Conn, error), d time.Duration, store AckStore) {
 	srv := f.server(t)
 	g, _ := games.Get("RUST")
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
-	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "test", Wait: 0, Pause: 20 * time.Millisecond, HeartbeatEvery: 30 * time.Millisecond, MaxBackoff: 50 * time.Millisecond})
+	Run(ctx, Options{Client: &api.Client{BaseURL: srv.URL, Key: "k"}, Game: g, Dial: dial, Version: "test", Wait: 0, Pause: 20 * time.Millisecond, HeartbeatEvery: 30 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, AckStore: store})
+}
+
+// flakyStore is a store whose Save can be switched to fail.
+type flakyStore struct {
+	mu    sync.Mutex
+	inner memAckStore
+	fail  bool
+	saves int
+}
+
+func (s *flakyStore) Load() ([]api.AckResult, error) { return s.inner.Load() }
+func (s *flakyStore) Save(r []api.AckResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return fmt.Errorf("disk full")
+	}
+	s.saves++
+	return s.inner.Save(r)
+}
+func (s *flakyStore) setFail(v bool) { s.mu.Lock(); s.fail = v; s.mu.Unlock() }
+
+func TestRestartDoesNotRerunUnacked(t *testing.T) {
+	f := &fakeAPI{queue: []map[string]any{{"id": "run_1", "command": "say oi"}}, failAcks: 1000}
+	dial, ran := console()
+	store := &memAckStore{}
+	runWithStore(t, f, dial, 300*time.Millisecond, store) // runs, ack never gets through, "crash"
+	if len(*ran) != 1 {
+		t.Fatalf("first life ran %v", *ran)
+	}
+	if saved, _ := store.Load(); len(saved) != 1 || saved[0].ID != "run_1" {
+		t.Fatalf("store holds %+v", saved)
+	}
+	f.mu.Lock()
+	f.failAcks = 0
+	f.mu.Unlock()
+	runWithStore(t, f, dial, 300*time.Millisecond, store) // restart with the same store
+	if len(*ran) != 1 {
+		t.Fatalf("restart ran again: %v", *ran)
+	}
+	acks, _ := f.snapshot()
+	if len(acks) != 1 || acks[0].ID != "run_1" || acks[0].Status != "ok" || acks[0].Output != "ok: say oi" {
+		t.Fatalf("acks %+v", acks)
+	}
+	if saved, _ := store.Load(); len(saved) != 0 {
+		t.Fatalf("acked results stay stored: %+v", saved)
+	}
+}
+
+func TestSaveFailureStopsExecution(t *testing.T) {
+	f := &fakeAPI{queue: []map[string]any{{"id": "run_1", "command": "say a"}, {"id": "run_2", "command": "say b"}}}
+	dial, ran := console()
+	store := &flakyStore{fail: true}
+	runWithStore(t, f, dial, 300*time.Millisecond, store)
+	if len(*ran) != 1 {
+		t.Fatalf("ran %v while results cannot be saved", *ran)
+	}
+}
+
+func TestExecutionResumesWhenSaveRecovers(t *testing.T) {
+	f := &fakeAPI{queue: []map[string]any{{"id": "run_1", "command": "say a"}, {"id": "run_2", "command": "say b"}}}
+	dial, ran := console()
+	store := &flakyStore{fail: true}
+	go func() { time.Sleep(150 * time.Millisecond); store.setFail(false) }()
+	runWithStore(t, f, dial, 600*time.Millisecond, store)
+	if len(*ran) != 2 {
+		t.Fatalf("ran %v", *ran)
+	}
+	acks, _ := f.snapshot()
+	if len(acks) != 2 {
+		t.Fatalf("acks %+v", acks)
+	}
 }
 
 func console() (func(context.Context) (rcon.Conn, error), *[]string) {
